@@ -2,9 +2,9 @@
 #include <stdlib.h>
 #include <cuda_runtime.h>
 
-#include "timer.h"
+#include "timer.cuh"
 
-#define SIZE 10000
+#define SIZE 1000
 
 void gemm(float *a, float *b, float *c, int n) {
     for (int i = 0; i < n; i++) {
