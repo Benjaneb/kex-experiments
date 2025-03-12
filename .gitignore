@@ -1,0 +1,6 @@
+# Ignore files without file endings
+*
+!*.*
+!*/
+
+*.out
