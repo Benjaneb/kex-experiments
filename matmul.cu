@@ -54,6 +54,53 @@ __global__ void matmul_shared(const float *A, const float *B, float *C, int n) {
         C[row * n + col] = sum;
 }
 
+// Block-level GEMM using shared memory with coalesced global reads
+// and potentially fewer shared memory bank conflicts for B accesses.
+__global__ void matmul_coalesced_shared(const float *A, const float *B, float *C, int n) {
+    __shared__ float tile_A[TILE_SIZE][TILE_SIZE];
+    __shared__ float tile_B[TILE_SIZE][TILE_SIZE]; // Stores B tile transposed
+
+    int row = blockIdx.y * TILE_SIZE + threadIdx.y; // Row in C this thread helps compute
+    int col = blockIdx.x * TILE_SIZE + threadIdx.x; // Col in C this thread helps compute
+    float sum = 0.0f;
+
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+
+    for (int tile = 0; tile < (n + TILE_SIZE - 1) / TILE_SIZE; ++tile) {
+        // Load tile from A into shared memory (Coalesced read)
+        int global_row_A = row; // blockIdx.y * TILE_SIZE + ty
+        int global_col_A = tile * TILE_SIZE + tx;
+        if (global_row_A < n && global_col_A < n)
+            tile_A[ty][tx] = A[global_row_A * n + global_col_A];
+        else
+            tile_A[ty][tx] = 0.0f;
+
+        // Load tile from B into shared memory, transposed (Coalesced read)
+        int global_row_B = tile * TILE_SIZE + ty;
+        int global_col_B = col; // blockIdx.x * TILE_SIZE + tx
+         if (global_row_B < n && global_col_B < n)
+            // Store into tile_B[tx][ty] (transposed)
+            tile_B[tx][ty] = B[global_row_B * n + global_col_B];
+        else
+            tile_B[tx][ty] = 0.0f;
+
+        __syncthreads(); // Ensure both tiles are loaded
+
+        // Compute partial product using shared memory tiles
+        // Access to tile_B[tx][k] should avoid bank conflicts
+        for (int k = 0; k < TILE_SIZE; ++k) {
+            sum += tile_A[ty][k] * tile_B[tx][k];
+        }
+
+        __syncthreads(); // Ensure computation is done before next tile load
+    }
+
+    // Write final result to C in global memory
+    if (row < n && col < n)
+        C[row * n + col] = sum;
+}
+
 // Utility to initialize matrices with random values
 void randomInitialize(float *mat, int n) {
     for (int i = 0; i < n * n; i++) {
@@ -87,8 +134,16 @@ int main() {
     // matmul_thread<<<blocks, threads>>>(d_A, d_B, d_C, N);
     
     // For block-level GEMM with shared memory:
-    matmul_shared<<<blocks, threads>>>(d_A, d_B, d_C, N);
-    
+    // matmul_shared<<<blocks, threads>>>(d_A, d_B, d_C, N);
+
+    // For block-level GEMM with shared memory and potentially fewer bank conflicts:
+    matmul_coalesced_shared<<<blocks, threads>>>(d_A, d_B, d_C, N);
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "CUDA error after kernel launch: %s\n", cudaGetErrorString(err));
+    }
+
     cudaMemcpy(h_C, d_C, size, cudaMemcpyDeviceToHost);
     
     // Print a sample element to verify results
